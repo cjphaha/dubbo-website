@@ -42,7 +42,7 @@ message HelloReply {
 以下是使用 IDL 定义服务的一个简单示例，我们可以把它命名为 `DemoService.proto`，proto 文件中定义了 RPC 服务名称 `DemoService` 与方法签名
  `SayHello (HelloRequest) returns (HelloReply) {}`，同时还定义了方法的入参结构体、出参结构体 `HelloRequest` 与 `HelloResponse`。
  IDL 格式的服务依赖 Protobuf 编译器，用来生成可以被用户调用的客户端与服务端编程 API，Dubbo 在原生 Protobuf Compiler 的基础上提供了适配多种语言的特有插件，用于适配 Dubbo 框架特有的 API 与编程模型。
- 
+
 > 使用 Dubbo3 IDL 定义的服务只允许一个入参与出参，这更有利于多语言实现与向后兼容性，支持依赖 Protobuf 序列化的向后兼容性透明的增删字段。
 
 ## 编译服务
@@ -65,6 +65,34 @@ public interface DemoService {
 ```
 
 ### Golang
+
+Go 语言生成的 stub 如下，这个 stub 里存了用户定义的接口和数据的类型。
+
+```go
+func _DUBBO_Greeter_SayHello_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HelloRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	base := srv.(dgrpc.Dubbo3GrpcService)
+	args := []interface{}{}
+	args = append(args, in)
+	invo := invocation.NewRPCInvocation("SayHello", args, nil)
+	if interceptor == nil {
+		result := base.GetProxyImpl().Invoke(ctx, invo)
+		return result.Result(), result.Error()
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/main.Greeter/SayHello",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		result := base.GetProxyImpl().Invoke(context.Background(), invo)
+		return result.Result(), result.Error()
+	}
+	return interceptor(ctx, in, info, handler)
+}
+```
 
 
 ## 配置并加载服务
@@ -119,6 +147,87 @@ public void callService() throws Exception {
 ```
 
 ### Golang
+
+提供端，实现服务
+
+```go
+type User struct {
+	ID   string
+	Name string
+	Age  int32
+	Time time.Time
+}
+
+type UserProvider struct {
+}
+
+func (u *UserProvider) GetUser(ctx context.Context, req []interface{}) (*User, error) {
+	gxlog.CInfo("req:%#v", req)
+	rsp := User{"A001", "Alex Stocks", 18, time.Now()}
+	gxlog.CInfo("rsp:%#v", rsp)
+	return &rsp, nil
+}
+
+func (u *UserProvider) Reference() string {
+	return "UserProvider"
+}
+
+func (u User) JavaClassName() string {
+	return "org.apache.dubbo.User"
+}
+
+func main() {
+    hessian.RegisterPOJO(&User{})
+	config.SetProviderService(new(UserProvider))
+}
+```
+
+提供端，注册服务
+
+
+```yaml
+services:
+  "UserProvider":
+    registry: "demoZk"
+    protocol: "dubbo"
+    interface: "org.apache.dubbo.UserProvider"
+    loadbalance: "random"
+    warmup: "100"
+    cluster: "failover"
+    methods:
+      - name: "GetUser"
+        retries: 1
+        loadbalance: "random"
+```
+
+消费端，引用服务
+
+```yaml
+references:
+  "UserProvider":
+    registry: "demoZk"
+    protocol: "dubbo"
+    interface: "org.apache.dubbo.UserProvider"
+    cluster: "failover"
+    methods:
+      - name: "GetUser"
+        retries: 3
+```
+
+消费端，使用服务 proxy
+
+```go
+func main() {
+	config.Load()
+	user := &pkg.User{}
+	err := userProvider.GetUser(context.TODO(), []interface{}{"A001"}, user)
+	if err != nil {
+		os.Exit(1)
+		return
+	}
+	gxlog.CInfo("response result: %v\n", user)
+}
+```
 
 
 ## 查看完整示例
